@@ -1,23 +1,30 @@
 #include <clocale>
 #include <cstdio>
 #include <cstdlib>
+#include <stdexcept>
 #include <thread>
 
 #include <nlohmann/json.hpp>
 
 #ifdef _WIN32
 
+#include <string>
+
 struct LocaleGuard {
 public:
-  explicit LocaleGuard(int mask, const char *locale) noexcept
-      : m_Mask{mask},
-        m_PrevPerThreadLocale{_configthreadlocale(_ENABLE_PER_THREAD_LOCALE)},
-        m_PrevLocale{std::setlocale(mask, locale)} {}
+  explicit LocaleGuard(int category, const char *locale) noexcept
+      : m_Category{category}, m_PrevLocale{std::setlocale(category, nullptr)},
+        m_PrevPerThreadLocale{_configthreadlocale(_ENABLE_PER_THREAD_LOCALE)} {
+    if (!std::setlocale(category)) {
+      _configthreadlocale(m_PrevPerThreadLocale);
+      throw std::invalid_argument{"Unsupported locale"};
+    }
+  }
 
   ~LocaleGuard() {
     switch (m_PrevPerThreadLocale) {
     case _ENABLE_PER_THREAD_LOCALE:
-      std::setlocale(m_Mask, m_PrevLocale);
+      std::setlocale(m_Category, m_PrevLocale.c_str());
       break;
     case _DISABLE_PER_THREAD_LOCALE:
       _configthreadlocale(_DISABLE_PER_THREAD_LOCALE);
@@ -33,37 +40,35 @@ public:
   LocaleGuard &operator=(LocaleGuard &&) = delete;
 
 private:
-  int m_Mask;
+  int m_Category;
+  std::string m_PrevLocale;
   int m_PrevPerThreadLocale;
-  const char *m_PrevLocale;
 };
 
 #else
 
-#include <memory>
-#include <type_traits>
-
-#include <xlocale.h>
-
 struct LocaleGuard {
 public:
-  explicit LocaleGuard(int mask, const char *locale) noexcept {
-    auto loc = newlocale(mask, locale, (locale_t)0);
-    auto prev_loc = uselocale(loc);
-    m_Loc = LocalePtr{loc, Deleter{prev_loc}};
+  explicit LocaleGuard(int category, const char *locale)
+      : m_Loc{newlocale(category, locale, nullptr)},
+        m_PrevLoc{uselocale(m_Loc)} {
+    if (!m_Loc)
+      throw std::invalid_argument{"Unsupported locale"};
   }
 
-private:
-  struct Deleter {
-    locale_t m_PrevLoc{};
+  ~LocaleGuard() {
+    uselocale(m_PrevLoc);
+    freelocale(m_Loc);
+  }
 
-    void operator()(locale_t l) noexcept {
-      uselocale(m_PrevLoc);
-      freelocale(l);
-    }
-  };
-  using LocalePtr = std::unique_ptr<std::remove_pointer_t<locale_t>, Deleter>;
-  LocalePtr m_Loc{};
+  LocaleGuard(LocaleGuard const &) = delete;
+  LocaleGuard &operator=(LocaleGuard const &) = delete;
+  LocaleGuard(LocaleGuard &&) = delete;
+  LocaleGuard &operator=(LocaleGuard &&) = delete;
+
+private:
+  locale_t m_Loc{};
+  locale_t m_PrevLoc{};
 };
 
 #endif
